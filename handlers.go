@@ -26,6 +26,7 @@ func (s *Server) runApiServer() error {
 
 	views := e.Group("/api")
 	views.GET("/me", s.handleGetMe)
+	views.GET("/stats", s.handleGetStats)
 	views.GET("/notifications", s.handleGetNotifications)
 	views.GET("/profile/:account/post/:rkey", s.handleGetPost)
 	views.GET("/profile/:account", s.handleGetProfileView)
@@ -63,6 +64,27 @@ func (s *Server) handleGetMe(e echo.Context) error {
 	return e.JSON(200, map[string]any{
 		"did":    s.mydid,
 		"handle": resp.Handle.String(),
+	})
+}
+
+func (s *Server) handleGetStats(e echo.Context) error {
+	var totalPosts int64
+	if err := s.backend.db.Model(&models.Post{}).Count(&totalPosts).Error; err != nil {
+		return e.JSON(500, map[string]any{
+			"error": "failed to count posts",
+		})
+	}
+
+	// Get the most recent post timestamp
+	var latestPost models.Post
+	var lastPostTime *time.Time
+	if err := s.backend.db.Model(&models.Post{}).Order("indexed DESC").First(&latestPost).Error; err == nil {
+		lastPostTime = &latestPost.Indexed
+	}
+
+	return e.JSON(200, map[string]any{
+		"totalPosts":   totalPosts,
+		"lastPostTime": lastPostTime,
 	})
 }
 

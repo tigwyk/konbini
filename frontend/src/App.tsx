@@ -7,11 +7,14 @@ import { ThreadView } from './components/ThreadView';
 import { PostComposer } from './components/PostComposer';
 import { NotificationsPage } from './components/NotificationsPage';
 import { ApiClient } from './api';
+import { formatRelativeTime } from './utils';
 import './App.css';
 
 function Navigation() {
   const location = useLocation();
   const [myHandle, setMyHandle] = useState<string | null>(null);
+  const [postCount, setPostCount] = useState<number | null>(null);
+  const [lastPostTime, setLastPostTime] = useState<string | null>(null);
 
   useEffect(() => {
     ApiClient.getMe().then(data => {
@@ -19,6 +22,26 @@ function Navigation() {
     }).catch(err => {
       console.error('Failed to fetch current user:', err);
     });
+
+    // Fetch stats
+    ApiClient.getStats().then(data => {
+      setPostCount(data.totalPosts);
+      setLastPostTime(data.lastPostTime || null);
+    }).catch(err => {
+      console.error('Failed to fetch stats:', err);
+    });
+
+    // Refresh stats every 30 seconds
+    const interval = setInterval(() => {
+      ApiClient.getStats().then(data => {
+        setPostCount(data.totalPosts);
+        setLastPostTime(data.lastPostTime || null);
+      }).catch(err => {
+        console.error('Failed to fetch stats:', err);
+      });
+    }, 30000);
+
+    return () => clearInterval(interval);
   }, []);
 
   return (
@@ -26,6 +49,16 @@ function Navigation() {
       <div className="nav-container">
         <Link to="/" className="nav-brand">
           Konbini
+          {postCount !== null && (
+            <span className="post-count-badge">
+              {postCount.toLocaleString()} posts indexed
+              {lastPostTime && (
+                <span className="freshness-indicator">
+                  • {formatRelativeTime(lastPostTime)} ago
+                </span>
+              )}
+            </span>
+          )}
         </Link>
         <div className="nav-links">
           <Link

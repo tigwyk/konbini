@@ -11,6 +11,14 @@ export class ApiClient {
     return response.json();
   }
 
+  static async getStats(): Promise<{totalPosts: number, lastPostTime?: string}> {
+    const response = await fetch(`${API_BASE_URL}/stats`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch stats: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
   static async getFollowingFeed(cursor?: string): Promise<FeedResponse> {
     const url = cursor
       ? `${API_BASE_URL}/followingfeed?cursor=${encodeURIComponent(cursor)}`

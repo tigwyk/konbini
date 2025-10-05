@@ -38,10 +38,30 @@ body {
   font-weight: 700;
   color: #1da1f2;
   text-decoration: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .nav-brand:hover {
   color: #1991db;
+}
+
+.post-count-badge {
+  font-size: 11px;
+  font-weight: 400;
+  color: #657786;
+  margin-top: 2px;
+  background: #e8f5fd;
+  padding: 2px 6px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.freshness-indicator {
+  color: #8899a6;
+  margin-left: 4px;
+  font-weight: 400;
 }
 
 .nav-links {
