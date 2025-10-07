@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/bluesky-social/indigo/xrpc"
+	xrpclib "github.com/bluesky-social/indigo/xrpc"
 	"github.com/ipfs/go-cid"
 	"github.com/labstack/gommon/log"
 )
@@ -40,7 +41,7 @@ func (s *Server) fetchMissingProfile(ctx context.Context, did string) error {
 		return err
 	}
 
-	c := &xrpc.Client{
+	c := &xrpclib.Client{
 		Host: resp.PDSEndpoint(),
 	}
 
@@ -68,6 +69,7 @@ func (s *Server) fetchMissingProfile(ctx context.Context, did string) error {
 }
 
 func (s *Server) addMissingPost(ctx context.Context, uri string) {
+	slog.Info("adding missing post to fetch queue", "uri", uri)
 	select {
 	case s.missingPosts <- uri:
 	case <-ctx.Done():
@@ -103,7 +105,7 @@ func (s *Server) fetchMissingPost(ctx context.Context, uri string) error {
 		return err
 	}
 
-	c := &xrpc.Client{
+	c := &xrpclib.Client{
 		Host: resp.PDSEndpoint(),
 	}
 
