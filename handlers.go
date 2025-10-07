@@ -11,7 +11,7 @@ import (
 
 	"github.com/bluesky-social/indigo/api/bsky"
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/bluesky-social/indigo/xrpc"
+	xrpclib "github.com/bluesky-social/indigo/xrpc"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/labstack/gommon/log"
@@ -23,6 +23,7 @@ func (s *Server) runApiServer() error {
 	e := echo.New()
 	e.Use(middleware.CORS())
 	e.GET("/debug", s.handleGetDebugInfo)
+	e.GET("/reldids", s.handleGetRelevantDids)
 
 	views := e.Group("/api")
 	views.GET("/me", s.handleGetMe)
@@ -48,6 +49,12 @@ func (s *Server) handleGetDebugInfo(e echo.Context) error {
 
 	return e.JSON(200, map[string]any{
 		"seq": seq,
+	})
+}
+
+func (s *Server) handleGetRelevantDids(e echo.Context) error {
+	return e.JSON(200, map[string]any{
+		"dids": s.backend.relevantDids,
 	})
 }
 
@@ -459,61 +466,104 @@ func (s *Server) buildPostView(ctx context.Context, fp *bsky.FeedPost) *feedPost
 		view.Langs = fp.Langs
 	}
 
-	// Hydrate embed if present
 	if fp.Embed != nil {
-		slog.Info("processing embed", "hasImages", fp.Embed.EmbedImages != nil, "hasExternal", fp.Embed.EmbedExternal != nil, "hasRecord", fp.Embed.EmbedRecord != nil)
-		if fp.Embed.EmbedImages != nil {
-			view.Embed = fp.Embed.EmbedImages
-		} else if fp.Embed.EmbedExternal != nil {
-			view.Embed = fp.Embed.EmbedExternal
-		} else if fp.Embed.EmbedRecord != nil {
-			// Hydrate quoted post
-			quotedURI := fp.Embed.EmbedRecord.Record.Uri
-			quotedCid := fp.Embed.EmbedRecord.Record.Cid
-			slog.Info("hydrating quoted post", "uri", quotedURI, "cid", quotedCid)
-
-			quotedPost, err := s.backend.getPostByUri(ctx, quotedURI, "*")
-			if err != nil {
-				slog.Warn("failed to get quoted post", "uri", quotedURI, "error", err)
-			}
-			if err == nil && quotedPost != nil && quotedPost.Raw != nil && len(quotedPost.Raw) > 0 && !quotedPost.NotFound {
-				slog.Info("found quoted post, hydrating")
-				var quotedFP bsky.FeedPost
-				if err := quotedFP.UnmarshalCBOR(bytes.NewReader(quotedPost.Raw)); err == nil {
-					quotedRepo, err := s.backend.getRepoByID(ctx, quotedPost.Author)
-					if err == nil {
-						quotedAuthor, err := s.getAuthorInfo(ctx, quotedRepo)
-						if err == nil {
-							view.Embed = map[string]interface{}{
-								"$type": "app.bsky.embed.record",
-								"record": &embedRecordView{
-									Type:   "app.bsky.embed.record#viewRecord",
-									Uri:    quotedURI,
-									Cid:    quotedCid,
-									Author: quotedAuthor,
-									Value:  &quotedFP,
-								},
-							}
-						}
-					}
-				}
-			}
-
-			// Fallback if hydration failed - show basic info
-			if view.Embed == nil {
-				slog.Info("quoted post not in database, using fallback")
-				view.Embed = map[string]interface{}{
-					"$type": "app.bsky.embed.record",
-					"record": map[string]interface{}{
-						"uri": quotedURI,
-						"cid": quotedCid,
-					},
-				}
-			}
-		}
+		view.Embed = s.hydrateEmbed(ctx, fp.Embed)
 	}
 
 	return view
+}
+
+func (s *Server) hydrateEmbed(ctx context.Context, embed *bsky.FeedPost_Embed) interface{} {
+	switch {
+	case embed.EmbedImages != nil:
+		return embed.EmbedImages
+	case embed.EmbedExternal != nil:
+		return embed.EmbedExternal
+	case embed.EmbedRecord != nil:
+		return s.hydrateQuotedPost(ctx, embed.EmbedRecord)
+	case embed.EmbedRecordWithMedia != nil:
+		return s.hydrateRecordWithMedia(ctx, embed.EmbedRecordWithMedia)
+	default:
+		return nil
+	}
+}
+
+func (s *Server) hydrateRecordWithMedia(ctx context.Context, rwm *bsky.EmbedRecordWithMedia) interface{} {
+	result := map[string]interface{}{
+		"$type": "app.bsky.embed.recordWithMedia",
+	}
+
+	// Hydrate media
+	if rwm.Media != nil {
+		if rwm.Media.EmbedImages != nil {
+			result["media"] = rwm.Media.EmbedImages
+		} else if rwm.Media.EmbedExternal != nil {
+			result["media"] = rwm.Media.EmbedExternal
+		}
+	}
+
+	// Hydrate record
+	if rwm.Record != nil {
+		result["record"] = s.hydrateQuotedPost(ctx, rwm.Record)
+	}
+
+	return result
+}
+
+func (s *Server) hydrateQuotedPost(ctx context.Context, embedRecord *bsky.EmbedRecord) interface{} {
+	quotedURI := embedRecord.Record.Uri
+	quotedCid := embedRecord.Record.Cid
+
+	quotedPost, err := s.backend.getPostByUri(ctx, quotedURI, "*")
+	if err != nil {
+		slog.Warn("failed to get quoted post", "uri", quotedURI, "error", err)
+		s.addMissingPost(ctx, quotedURI)
+		return s.buildQuoteFallback(quotedURI, quotedCid)
+	}
+
+	if quotedPost == nil || quotedPost.Raw == nil || len(quotedPost.Raw) == 0 || quotedPost.NotFound {
+		s.addMissingPost(ctx, quotedURI)
+		return s.buildQuoteFallback(quotedURI, quotedCid)
+	}
+
+	var quotedFP bsky.FeedPost
+	if err := quotedFP.UnmarshalCBOR(bytes.NewReader(quotedPost.Raw)); err != nil {
+		slog.Warn("failed to unmarshal quoted post", "error", err)
+		return s.buildQuoteFallback(quotedURI, quotedCid)
+	}
+
+	quotedRepo, err := s.backend.getRepoByID(ctx, quotedPost.Author)
+	if err != nil {
+		slog.Warn("failed to get quoted post author", "error", err)
+		return s.buildQuoteFallback(quotedURI, quotedCid)
+	}
+
+	quotedAuthor, err := s.getAuthorInfo(ctx, quotedRepo)
+	if err != nil {
+		slog.Warn("failed to get quoted post author info", "error", err)
+		return s.buildQuoteFallback(quotedURI, quotedCid)
+	}
+
+	return map[string]interface{}{
+		"$type": "app.bsky.embed.record",
+		"record": &embedRecordView{
+			Type:   "app.bsky.embed.record#viewRecord",
+			Uri:    quotedURI,
+			Cid:    quotedCid,
+			Author: quotedAuthor,
+			Value:  &quotedFP,
+		},
+	}
+}
+
+func (s *Server) buildQuoteFallback(uri, cid string) map[string]interface{} {
+	return map[string]interface{}{
+		"$type": "app.bsky.embed.record",
+		"record": map[string]interface{}{
+			"uri": uri,
+			"cid": cid,
+		},
+	}
 }
 
 func (s *Server) handleGetThread(e echo.Context) error {
@@ -841,7 +891,7 @@ func (s *Server) handleCreateRecord(e echo.Context) error {
 	}
 
 	var resp createRecordResponse
-	if err := s.client.Do(ctx, xrpc.Procedure, "application/json", "com.atproto.repo.createRecord", nil, input, &resp); err != nil {
+	if err := s.client.Do(ctx, xrpclib.Procedure, "application/json", "com.atproto.repo.createRecord", nil, input, &resp); err != nil {
 		slog.Error("failed to create record", "error", err)
 		return e.JSON(500, map[string]any{
 			"error":   "failed to create record",

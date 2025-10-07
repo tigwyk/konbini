@@ -36,7 +36,14 @@ type Notification struct {
 	gorm.Model
 	For uint
 
-	Author uint
-	Source string
-	Kind   string
+	Author    uint
+	Source    string
+	SourceCid string
+	Kind      string
+}
+
+type SequenceTracker struct {
+	ID     uint   `gorm:"primarykey"`
+	Key    string `gorm:"uniqueIndex"`
+	IntVal int64
 }
